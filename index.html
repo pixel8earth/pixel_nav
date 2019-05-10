@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <title>three.js grid test</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+    <style>
+      body {
+        margin: 0px;
+        background-color: #000000;
+        overflow: hidden;
+      }
+    </style>
+  </head>
+  <body>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/100/three.min.js"></script>
+    <script src="OrbitControls.js"></script>
+    <script src="sphericalmercator.js"></script>
+
+    <script>
+      var camera, scene, renderer, controls, tile, loadedTiles = {};
+      var flag = 0;
+      var start, end;
+      var merc = new SphericalMercator({ size: 256 });
+      var count = 0;
+      var mouse = new THREE.Vector2();
+      var raycaster;
+
+      var frag = `
+        void main() {
+          gl_FragColor = vec4(1.0, 1.0, 0.0, 0.5);
+          gl_FragColor.a = 1.0;
+        }
+      `;
+      
+      var vert = `
+        uniform float size;
+        uniform float scale;
+        void main() {
+          vec4 mvPosition = modelViewMatrix * vec4( position, 1.0 );
+          gl_PointSize = size;  //( scale / - length( mvPosition.xyz )  );
+          gl_Position = projectionMatrix * mvPosition;
+        }
+      `;
+      
+      init();
+      animate();
+
+      function init() {
+
+        scene = new THREE.Scene();
+        scene.fog = new THREE.FogExp2( 0x000104, 0.0000675 );
+        camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, .1, 5000);
+    
+        // renderer
+        renderer = new THREE.WebGLRenderer();
+        renderer.setPixelRatio( window.devicePixelRatio );
+        renderer.setSize( window.innerWidth, window.innerHeight );
+        document.body.appendChild( renderer.domElement );
+
+        //const loc = new THREE.Vector3(-11800400, 4655550, 2181)
+        const loc = new THREE.Vector3(-11800315.929875324, 4655335.598976839, 2175.0350087170045)
+        tile = new THREE.Vector3(53881, 100618, 18)
+
+        raycaster = new THREE.Raycaster();
+        raycaster.precision = 0.01;
+
+        camera.position.x = loc.x
+        camera.position.y = loc.y
+        camera.position.z = loc.z
+        camera.up.set(0,0,1);
+        //camera.lookAt(loc);
+        camera.rotateX(1.6)
+        camera.updateMatrix();
+        
+        //controls = new THREE.OrbitControls(camera, renderer.domElement)
+        //controls.update()
+
+        updateTiles()
+
+        // events
+        window.addEventListener( 'resize', onWindowResize, false );
+        window.addEventListener( 'mousedown', onDown, false );
+        window.addEventListener( 'mousemove', onMove, false );
+        window.addEventListener( 'mouseup', onUp, false );
+      }
+
+      function updateTiles() {
+        var colors = [0x00ffff, 0xffffff, 0xa500ff, 0x0f0fff, 0xfa55f0, 0x55f055, 0xff0ff0, 0xd6df55, 0xf0fff5]
+        const minx = tile.x - 4.0
+        const maxx = tile.x + 4.0
+        const miny = tile.y - 4.0
+        const maxy = tile.y + 4.0
+
+        cnt = 0
+        const newTiles = [];
+        for ( var x = minx; x < maxx+1; x++ ) {
+          for ( var y = miny; y < maxy+1; y++ ) {
+            newTiles.push(new THREE.Vector3(x, y, 18))
+            cnt++;
+          }
+        }
+        loadTiles(newTiles)
+      }
+
+      function updater() {
+        console.log('looger')
+      }
+
+      async function loadTiles( newTiles ) {
+        var coordsList = []
+        newTiles.forEach( async t => {
+          const coords = [t.x, t.y, t.z].join('-')
+          coordsList.push(coords)
+          if (!loadedTiles[coords]) {
+            const geom = new THREE.BufferGeometry();
+            //const mat = new THREE.PointsMaterial( { color: 0xffffff, size: 0.25 } )
+            const mat = new THREE.ShaderMaterial( {
+              uniforms: {
+                size: { type: 'f', value: 2.0 },
+              },
+              depthTest: false,
+              depthWrite: false,
+              transparent:  true,
+              vertexShader: vert,
+              fragmentShader: frag,
+            } );
+            mat.extensions.derivatives = true;
+            const vertices = await fetchTile(t)
+              .catch(e => console.log('Not found', e));
+              //.then( vertices => {
+            geom.addAttribute( 'position', new THREE.Float32BufferAttribute( vertices, 3 ) );
+            const points = new THREE.Points( geom, mat );
+            points.coords = coords
+            loadedTiles[coords] = points;
+            scene.add(points)
+            //})
+          }
+        })
+        //for each loaded tile, if not in newTiles, remove
+        Object.keys(loadedTiles).forEach( coords => {
+          if (coordsList.indexOf(coords) === -1) {
+            console.log('REMOVE', coords)
+            scene.remove(loadedTiles[coords])
+            delete loadedTiles[coords]
+          }
+        })
+      }
+
+      async function fetchTile( tile ) {
+        const name = `${tile.z}/${tile.x}/${tile.y}.csv`;
+        //const url = `http://192.168.1.7/~chelm/hdiz/salida/lidar/laz_tiles/${name}`;
+        const url = `./tiles/${name}`;
+      
+
+        const raw = await fetch(url)
+          .then(function(res) {
+            return res.text();
+          })
+        const rows = raw.split('\n')
+
+        const data = []
+        count += rows.length
+        rows.map((row, idx) => {
+          const rowData = row.split(",");
+          if (rowData.length > 1) {
+            rowData.forEach(d => data.push(parseFloat(d)) )
+          }
+        });
+        return data;
+
+        /*const data = new Float32Array( rows.length * 3 );
+        for ( var i = 0; i < rows.length; i += 3 ) {
+          const d = rows[i].split(",");
+          data[ i ] = d[0];
+          data[ i + 1 ] = d[2];
+          data[ i + 2 ] = d[1];
+        }
+        return data;*/
+      }
+
+      function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize( window.innerWidth, window.innerHeight );
+      }
+
+      function onMove(e) {
+        mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+        mouse.y = - (e.clientY / window.innerHeight) * 2 + 1;
+        if (flag === 1) {
+          //console.log('drag', e)
+          var dx = e.clientX - start.clientX;
+          var dy = start.clientY - e.clientY;
+          var scale = .05 
+          //camera.translateX(dx * scale);
+
+          const angle = (-dx*scale) * Math.PI / 1000;
+          const axis = camera.up;
+
+          var quaternion = new THREE.Quaternion()
+          quaternion.setFromAxisAngle( axis, angle);
+          camera.applyQuaternion(quaternion)
+          camera.updateMatrix();
+          camera.translateZ(-dy * scale);
+        }
+      }
+
+      function onUp(e) {
+        // update tiles 
+        flag = 0;
+        end = e
+        var dx = start.clientX - end.clientX;
+        var dy = start.clientY - end.clientY;
+        var scale = .5
+        console.log(mouse)
+        var vector = new THREE.Vector3(mouse.x, mouse.y, 1).unproject(camera);
+        raycaster.set(camera.position, vector.sub(camera.position).normalize());
+        var intersects = raycaster.intersectObjects(scene.children, true);
+        console.log('INTERSECTS', intersects)
+        for ( var i = 0; i < intersects.length; i++ ) {
+          //intersects[ i ].object.material.color.set( 0xff0000 );
+          console.log(intersects[i])
+        }
+  
+        const {z,x,y} = this.camera.position;
+          const newLngLat = merc.inverse([x,y])
+          const t = pointToTile(newLngLat[0], newLngLat[1], 18);
+          const newTile = new THREE.Vector3(t[0], t[1], t[2]);
+          console.log(newTile.x, tile.x)
+          if (newTile.x != tile.x) {
+            console.log('NEW TILES')
+            tile = newTile
+            updateTiles()
+          }
+      }
+    
+      function onDown(e) {
+        flag = 1;
+        start = e;
+      }
+
+      function animate() {
+        requestAnimationFrame( animate );
+        //controls.update()
+        renderer.render( scene, camera );
+      }
+
+      function pointToTileFraction(lon, lat, z) {
+        var sin = Math.sin(lat * (Math.PI / 180)),
+            z2 = Math.pow(2, z),
+            x = z2 * (lon / 360 + 0.5),
+            y = z2 * (0.5 - 0.25 * Math.log((1 + sin) / (1 - sin)) / Math.PI);
+      
+        // Wrap Tile X
+        x = x % z2
+        if (x < 0) x = x + z2
+        return [x, y, z];
+      }
+      
+      function pointToTile (lon, lat, z) {
+          var tile = pointToTileFraction(lon, lat, z);
+          tile[0] = Math.floor(tile[0]);
+          tile[1] = Math.floor(tile[1]);
+          return tile;
+      }
+    </script>
+
+  </body>
+</html>
